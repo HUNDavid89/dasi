@@ -8,6 +8,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://hokxyjibgdsutxzcznur.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_KByhnmfoOcl2H0ecNcdYeA_8FzThB_8';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
 <style>
   :root{
     --accent: #2563eb;
@@ -1254,6 +1260,18 @@
 </head>
 <body>
 
+<div id="loginGate" style="position:fixed;inset:0;background:#f0f4ff;z-index:99999;display:flex;align-items:center;justify-content:center;font-family:'DM Sans',sans-serif">
+  <div style="background:#fff;border-radius:16px;padding:36px 32px;width:320px;box-shadow:0 8px 30px rgba(0,0,0,0.12)">
+    <div style="font-family:'DM Serif Display',serif;font-size:1.5rem;margin-bottom:4px;color:#0f172a">Dashboard</div>
+    <div style="font-size:0.85rem;color:#64748b;margin-bottom:22px">Jelentkezz be a folytatáshoz</div>
+    <input id="loginEmail" type="email" placeholder="Email" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:10px;border:1px solid #c7d4f0;border-radius:8px;font-size:0.9rem;font-family:'DM Sans',sans-serif;outline:none">
+    <input id="loginPassword" type="password" placeholder="Jelszó" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:14px;border:1px solid #c7d4f0;border-radius:8px;font-size:0.9rem;font-family:'DM Sans',sans-serif;outline:none" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()" style="width:100%;padding:11px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:0.9rem;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">Belépés</button>
+    <div id="loginError" style="color:#dc2626;font-size:0.8rem;margin-top:10px;min-height:16px"></div>
+  </div>
+</div>
+
+<div id="dashboardRoot" style="display:none">
 <div class="header">
   <div class="header-left">
     <div style="display:flex;align-items:center;gap:14px">
@@ -11705,5 +11723,39 @@ initWebsiteChecker();
   if (ws === 'munka') { renderWorkCounters(); checkMediaCardVisibility(); renderDailyTipCard(); checkReportCard(); checkBillingReminderCard(); checkWedPostCard(); renderNapiKeretCard(); renderClientDeck(); applyDeckMode(); }
 })();
 </script>
+
+</div>
+
+<script>
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  if (!email || !password) { errEl.textContent = 'Add meg az emailt és a jelszót.'; return; }
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) { errEl.textContent = 'Hibás email vagy jelszó.'; return; }
+  showDashboard();
+}
+
+function showDashboard() {
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('dashboardRoot').style.display = '';
+}
+
+(async function checkAuth() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) showDashboard();
+})();
+
+sb.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_IN' && session) showDashboard();
+  if (event === 'SIGNED_OUT') {
+    document.getElementById('loginGate').style.display = 'flex';
+    document.getElementById('dashboardRoot').style.display = 'none';
+  }
+});
+</script>
+
 </body>
 </html>
