@@ -56,9 +56,13 @@
       if (value === null) deletes.push(key);
       else upserts.push({ user_id: session.user.id, key, value, updated_at: new Date().toISOString() });
     });
-    if (upserts.length) await sb.from('dashboard_kv').upsert(upserts);
+    if (upserts.length) {
+      const { error } = await sb.from('dashboard_kv').upsert(upserts, { onConflict: 'user_id,key' });
+      if (error) console.error('Supabase upsert hiba:', error);
+    }
     for (const key of deletes) {
-      await sb.from('dashboard_kv').delete().eq('user_id', session.user.id).eq('key', key);
+      const { error } = await sb.from('dashboard_kv').delete().eq('user_id', session.user.id).eq('key', key);
+      if (error) console.error('Supabase delete hiba:', error);
     }
   };
 
@@ -66,7 +70,8 @@
     const { data: { session } } = await sb.auth.getSession();
     if (!session) return false;
     const { data, error } = await sb.from('dashboard_kv').select('key,value').eq('user_id', session.user.id);
-    if (error) { console.error('Supabase pull hiba', error); return false; }
+    if (error) { console.error('Supabase pull hiba:', error); alert('Supabase pull hiba: ' + error.message); return false; }
+    console.log('Supabase pull: ' + data.length + ' kulcs érkezett');
     data.forEach(row => { if (row.value !== null) __origSetItem.call(localStorage, row.key, row.value); });
     sessionStorage.setItem('david_kv_synced', '1');
     return true;
@@ -82,9 +87,14 @@
         rows.push({ user_id: session.user.id, key, value: localStorage.getItem(key), updated_at: new Date().toISOString() });
       }
     }
+    console.log('Supabase push: ' + rows.length + ' kulcs küldése');
+    let failCount = 0;
     for (let i = 0; i < rows.length; i += 200) {
-      await sb.from('dashboard_kv').upsert(rows.slice(i, i + 200));
+      const { error } = await sb.from('dashboard_kv').upsert(rows.slice(i, i + 200), { onConflict: 'user_id,key' });
+      if (error) { failCount++; console.error('Supabase push hiba (batch ' + (i/200) + '):', error); }
     }
+    if (failCount > 0) alert(failCount + ' batch push sikertelen volt — nézd a konzolt (F12).');
+    return rows.length;
   };
 </script>
 <style>
@@ -1434,6 +1444,7 @@
       <div style="display:flex;flex-direction:column;gap:4px;margin-left:4px">
         <button class="btn" style="padding:5px 10px;font-size:0.78rem" id="backupNowBtn" onclick="manualBackup()" title="Backup készítés">💾</button>
         <button class="btn" style="padding:5px 10px;font-size:0.78rem" onclick="doLogout()" title="Kijelentkezés">🚪</button>
+        <button class="btn" style="padding:5px 10px;font-size:0.78rem" onclick="manualResync()" title="Teljes újraszinkronizálás Supabase-be">🔄☁️</button>
         <label class="btn" style="padding:5px 10px;font-size:0.78rem;cursor:pointer" title="Visszaállítás JSON-ból">
           📂<input type="file" accept=".json" onchange="importData(event)" style="display:none">
         </label>
@@ -11801,6 +11812,12 @@ initWebsiteChecker();
 </div>
 
 <script>
+async function manualResync() {
+  if (!confirm('Az EZEN az eszközön lévő adatok felülírják a Supabase-ben tároltakat. Folytatod?')) return;
+  const count = await window.__pushAllLocalData();
+  alert('Kész: ' + count + ' kulcs feltöltve Supabase-be.');
+}
+
 async function doLogout() {
   if (!confirm('Biztosan kijelentkezel?')) return;
   await sb.auth.signOut();
