@@ -13,6 +13,79 @@
   const SUPABASE_URL = 'https://hokxyjibgdsutxzcznur.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_KByhnmfoOcl2H0ecNcdYeA_8FzThB_8';
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // ── LOCALSTORAGE <-> SUPABASE SZINKRON SHIM ──────────────────────────────
+  // Minden localStorage írás automatikusan felkerül Supabase-be (kivéve a Supabase saját sb- kulcsai)
+  window.__syncEnabled = false;
+  window.__syncQueue = {};
+  window.__syncTimer = null;
+
+  function __isSyncableKey(key) {
+    return key && !key.startsWith('sb-') && key !== 'david_kv_synced';
+  }
+
+  const __origSetItem = Storage.prototype.setItem;
+  const __origRemoveItem = Storage.prototype.removeItem;
+
+  Storage.prototype.setItem = function(key, value) {
+    __origSetItem.call(this, key, value);
+    if (this === localStorage && window.__syncEnabled && __isSyncableKey(key)) {
+      window.__syncQueue[key] = value;
+      clearTimeout(window.__syncTimer);
+      window.__syncTimer = setTimeout(window.__flushSync, 900);
+    }
+  };
+
+  Storage.prototype.removeItem = function(key) {
+    __origRemoveItem.call(this, key);
+    if (this === localStorage && window.__syncEnabled && __isSyncableKey(key)) {
+      window.__syncQueue[key] = null;
+      clearTimeout(window.__syncTimer);
+      window.__syncTimer = setTimeout(window.__flushSync, 900);
+    }
+  };
+
+  window.__flushSync = async function() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return;
+    const entries = Object.entries(window.__syncQueue);
+    window.__syncQueue = {};
+    const upserts = [];
+    const deletes = [];
+    entries.forEach(([key, value]) => {
+      if (value === null) deletes.push(key);
+      else upserts.push({ user_id: session.user.id, key, value, updated_at: new Date().toISOString() });
+    });
+    if (upserts.length) await sb.from('dashboard_kv').upsert(upserts);
+    for (const key of deletes) {
+      await sb.from('dashboard_kv').delete().eq('user_id', session.user.id).eq('key', key);
+    }
+  };
+
+  window.__pullFromSupabase = async function() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return false;
+    const { data, error } = await sb.from('dashboard_kv').select('key,value').eq('user_id', session.user.id);
+    if (error) { console.error('Supabase pull hiba', error); return false; }
+    data.forEach(row => { if (row.value !== null) __origSetItem.call(localStorage, row.key, row.value); });
+    sessionStorage.setItem('david_kv_synced', '1');
+    return true;
+  };
+
+  window.__pushAllLocalData = async function() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return;
+    const rows = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (__isSyncableKey(key)) {
+        rows.push({ user_id: session.user.id, key, value: localStorage.getItem(key), updated_at: new Date().toISOString() });
+      }
+    }
+    for (let i = 0; i < rows.length; i += 200) {
+      await sb.from('dashboard_kv').upsert(rows.slice(i, i + 200));
+    }
+  };
 </script>
 <style>
   :root{
@@ -1360,6 +1433,7 @@
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;margin-left:4px">
         <button class="btn" style="padding:5px 10px;font-size:0.78rem" id="backupNowBtn" onclick="manualBackup()" title="Backup készítés">💾</button>
+        <button class="btn" style="padding:5px 10px;font-size:0.78rem" onclick="doLogout()" title="Kijelentkezés">🚪</button>
         <label class="btn" style="padding:5px 10px;font-size:0.78rem;cursor:pointer" title="Visszaállítás JSON-ból">
           📂<input type="file" accept=".json" onchange="importData(event)" style="display:none">
         </label>
@@ -11727,30 +11801,61 @@ initWebsiteChecker();
 </div>
 
 <script>
+async function doLogout() {
+  if (!confirm('Biztosan kijelentkezel?')) return;
+  await sb.auth.signOut();
+}
+
+function setLoginStatus(msg) {
+  const el = document.getElementById('loginError');
+  if (el) { el.style.color = '#2563eb'; el.textContent = msg; }
+}
+
 async function doLogin() {
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
   const errEl = document.getElementById('loginError');
+  errEl.style.color = '#dc2626';
   errEl.textContent = '';
   if (!email || !password) { errEl.textContent = 'Add meg az emailt és a jelszót.'; return; }
   const { error } = await sb.auth.signInWithPassword({ email, password });
   if (error) { errEl.textContent = 'Hibás email vagy jelszó.'; return; }
-  showDashboard();
+  await runSyncAndReload();
 }
 
 function showDashboard() {
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('dashboardRoot').style.display = '';
+  window.__syncEnabled = true;
+}
+
+async function runSyncAndReload() {
+  setLoginStatus('Adatok szinkronizálása...');
+  const bootstrapped = localStorage.getItem('david_supabase_bootstrapped') === '1';
+  await window.__pullFromSupabase();
+  if (!bootstrapped) {
+    setLoginStatus('Kezdeti feltöltés...');
+    await window.__pushAllLocalData();
+    localStorage.setItem('david_supabase_bootstrapped', '1');
+    await window.__pushAllLocalData();
+  }
+  location.reload();
 }
 
 (async function checkAuth() {
   const { data: { session } } = await sb.auth.getSession();
-  if (session) showDashboard();
+  if (!session) return;
+  if (sessionStorage.getItem('david_kv_synced') !== '1') {
+    await runSyncAndReload();
+    return;
+  }
+  showDashboard();
 })();
 
 sb.auth.onAuthStateChange((event, session) => {
-  if (event === 'SIGNED_IN' && session) showDashboard();
   if (event === 'SIGNED_OUT') {
+    window.__syncEnabled = false;
+    sessionStorage.removeItem('david_kv_synced');
     document.getElementById('loginGate').style.display = 'flex';
     document.getElementById('dashboardRoot').style.display = 'none';
   }
